@@ -26,7 +26,7 @@ The list below covers every supported command.
 | `CLIENT LIST` | Planned |
 | `CLIENT SETNAME` | Stored on the proxy only, never sent to a backend |
 | `ECHO` | Answered by proxy |
-| `HELLO` | Answered by proxy; reports `mode` `standalone` |
+| `HELLO` | Answered by proxy, except the first HELLO 3 (RESP3 probe) and AUTH with a non-default user, which go to the backend. Reports mode standalone. |
 | `PING` | Answered by proxy |
 | `RESET` | Planned |
 

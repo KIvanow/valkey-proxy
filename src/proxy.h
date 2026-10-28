@@ -373,6 +373,11 @@ typedef struct {
      * seconds -- unlike the one-shot startup discovery, which uses a fixed,
      * more generous timeout since it blocks nothing but its own boot. */
     int backend_connect_timeout_ms;
+    /* Overrides for what HELLO and INFO report about the backend; empty
+     * means report what the backends say (see src/info.c). */
+    char reported_version[32];
+    char reported_role[16];
+    char reported_modules[448];
 } Config;
 
 /* ── globals ────────────────────────────────────────────────────────── */
@@ -602,8 +607,18 @@ int proxy_pools_append(Worker *w, GrowBuf *g);
 
 /* ── INFO (see src/info.c) ──────────────────────────────────────────── */
 void info_init(const char *argv0, const char *conf_path);
-void info_set_backend_versions(const char *valkey_version, const char *redis_version);
-void info_get_backend_versions(char *valkey_version, size_t vcap, char *redis_version, size_t rcap);
+/* A module the backends have loaded, as HELLO reports it. */
+#define MAX_BACKEND_MODULES 32
+typedef struct {
+    char name[64];
+    long long ver;
+} BackendModule;
+void info_set_backend_info(const char *valkey_version, const char *redis_version, const BackendModule *mods, int nmods);
+/* What HELLO and INFO report, with the reported_* config overrides
+ * applied. */
+void info_get_reported_versions(char *valkey_version, size_t vcap, char *redis_version, size_t rcap);
+const char *info_reported_role(void);
+int info_get_reported_modules(BackendModule *out, int cap);
 void handle_info_cmd(Worker *w, ClientConn *client, int cmdlen);
 char *info_aggregate(Worker *w, FanoutCtx *ctx, int *out_len);
 void handle_proxy_info_cmd(Worker *w, ClientConn *client, int cmdlen);

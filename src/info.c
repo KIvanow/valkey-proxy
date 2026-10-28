@@ -73,12 +73,15 @@ static char g_run_id[41];
 static char g_executable[PATH_MAX];
 static char g_config_file[PATH_MAX];
 
-/* Lowest backend versions seen by the last topology probe (see
- * probe_backend_versions() in cluster.c). Written by the main thread at
- * startup and later by the refresh thread, read by every worker. */
+/* Lowest backend versions, and the modules loaded on every master, seen
+ * by the last topology probe (see probe_backend_versions() in cluster.c).
+ * Written by the main thread at startup and later by the refresh thread,
+ * read by every worker. */
 static pthread_mutex_t g_backend_ver_lock = PTHREAD_MUTEX_INITIALIZER;
 static char g_valkey_version[32];
 static char g_redis_version[32];
+static BackendModule g_modules[MAX_BACKEND_MODULES];
+static int g_nmodules;
 
 static void abs_path_or_copy(const char *path, char *out, size_t cap) {
     char tmp[PATH_MAX];
@@ -104,18 +107,60 @@ void info_init(const char *argv0, const char *conf_path) {
     for (size_t i = 0; i < sizeof(rnd); i++) snprintf(g_run_id + i * 2, 3, "%02x", rnd[i]);
 }
 
-void info_set_backend_versions(const char *valkey_version, const char *redis_version) {
+void info_set_backend_info(const char *valkey_version, const char *redis_version, const BackendModule *mods,
+                           int nmods) {
+    if (nmods > MAX_BACKEND_MODULES) nmods = MAX_BACKEND_MODULES;
     pthread_mutex_lock(&g_backend_ver_lock);
     snprintf(g_valkey_version, sizeof(g_valkey_version), "%s", valkey_version);
     snprintf(g_redis_version, sizeof(g_redis_version), "%s", redis_version);
+    memcpy(g_modules, mods, sizeof(*mods) * (size_t)nmods);
+    g_nmodules = nmods;
     pthread_mutex_unlock(&g_backend_ver_lock);
 }
 
-void info_get_backend_versions(char *valkey_version, size_t vcap, char *redis_version, size_t rcap) {
+/* reported_version replaces the version the backend itself reports in
+ * HELLO: valkey_version, or redis_version for a Redis backend. */
+void info_get_reported_versions(char *valkey_version, size_t vcap, char *redis_version, size_t rcap) {
     pthread_mutex_lock(&g_backend_ver_lock);
     snprintf(valkey_version, vcap, "%s", g_valkey_version);
     snprintf(redis_version, rcap, "%s", g_redis_version);
     pthread_mutex_unlock(&g_backend_ver_lock);
+    if (!g_config.reported_version[0]) return;
+    if (valkey_version[0] || !redis_version[0])
+        snprintf(valkey_version, vcap, "%s", g_config.reported_version);
+    else
+        snprintf(redis_version, rcap, "%s", g_config.reported_version);
+}
+
+const char *info_reported_role(void) {
+    return g_config.reported_role[0] ? g_config.reported_role : "master";
+}
+
+/* reported_modules is "none", or a comma-separated list of name or
+ * name:ver (ver defaults to 0). */
+int info_get_reported_modules(BackendModule *out, int cap) {
+    if (cap > MAX_BACKEND_MODULES) cap = MAX_BACKEND_MODULES;
+    if (!g_config.reported_modules[0]) {
+        pthread_mutex_lock(&g_backend_ver_lock);
+        int n = g_nmodules < cap ? g_nmodules : cap;
+        memcpy(out, g_modules, sizeof(*out) * (size_t)n);
+        pthread_mutex_unlock(&g_backend_ver_lock);
+        return n;
+    }
+    if (!strcasecmp(g_config.reported_modules, "none")) return 0;
+    char tmp[sizeof(g_config.reported_modules)];
+    snprintf(tmp, sizeof(tmp), "%s", g_config.reported_modules);
+    int n = 0;
+    char *save = NULL;
+    for (char *tok = strtok_r(tmp, ",", &save); tok && n < cap; tok = strtok_r(NULL, ",", &save)) {
+        char *colon = strchr(tok, ':');
+        if (colon) *colon = '\0';
+        if (!tok[0]) continue;
+        snprintf(out[n].name, sizeof(out[n].name), "%s", tok);
+        out[n].ver = colon ? strtoll(colon + 1, NULL, 10) : 0;
+        n++;
+    }
+    return n;
 }
 
 /* ── section selection ──────────────────────────────────────────────── */
@@ -150,7 +195,7 @@ static uint32_t parse_sections(const char **args, const int *lens, int n) {
 /* ── local sections ─────────────────────────────────────────────────── */
 static int append_server(GrowBuf *g) {
     char valkey_version[32], redis_version[32];
-    info_get_backend_versions(valkey_version, sizeof(valkey_version), redis_version, sizeof(redis_version));
+    info_get_reported_versions(valkey_version, sizeof(valkey_version), redis_version, sizeof(redis_version));
     struct utsname un;
     if (uname(&un) != 0) memset(&un, 0, sizeof(un));
     struct timeval tv;
@@ -477,12 +522,20 @@ static char *build_info(Worker *w, ClientConn *client, uint32_t mask, FanoutCtx 
     return reply;
 }
 
+/* Most arguments INFO, or PROXY INFO after its subcommand, takes. The
+ * arrays hold one more, so a longer command is rejected instead of being
+ * cut off: resp_extract_all_args() stops at max without saying so. */
 #define INFO_MAX_ARGS 64
 
 void handle_info_cmd(Worker *w, ClientConn *client, int cmdlen) {
-    const char *args[INFO_MAX_ARGS];
-    int lens[INFO_MAX_ARGS];
-    int n = resp_extract_all_args(client->hbuf, cmdlen, args, lens, INFO_MAX_ARGS);
+    const char *args[INFO_MAX_ARGS + 1];
+    int lens[INFO_MAX_ARGS + 1];
+    int n = resp_extract_all_args(client->hbuf, cmdlen, args, lens, INFO_MAX_ARGS + 1);
+    if (n > INFO_MAX_ARGS) {
+        client_send_error(w, client, "wrong number of arguments for 'info' command");
+        client->hbuf_len = 0;
+        return;
+    }
     if (n < 0) n = 0;
     uint32_t mask = parse_sections(args, lens, n);
 
@@ -552,10 +605,10 @@ static int resolve_shard(Worker *w, const char *arg, int len) {
 
 void handle_proxy_info_cmd(Worker *w, ClientConn *client, int cmdlen) {
     /* args[0] is "INFO" (PROXY's subcommand); sections follow. */
-    const char *args[INFO_MAX_ARGS];
-    int lens[INFO_MAX_ARGS];
-    int n = resp_extract_all_args(client->hbuf, cmdlen, args, lens, INFO_MAX_ARGS);
-    if (n < 1 || n == INFO_MAX_ARGS) {
+    const char *args[INFO_MAX_ARGS + 2];
+    int lens[INFO_MAX_ARGS + 2];
+    int n = resp_extract_all_args(client->hbuf, cmdlen, args, lens, INFO_MAX_ARGS + 2);
+    if (n < 1 || n - 1 > INFO_MAX_ARGS) {
         client_send_error(w, client, "wrong number of arguments for 'proxy|info' command");
         client->hbuf_len = 0;
         return;

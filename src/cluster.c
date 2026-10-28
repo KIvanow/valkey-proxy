@@ -63,15 +63,64 @@ static void info_field(const char *info, const char *field, char *out, size_t ca
     snprintf(out, cap, "%.*s", (int)(n < cap ? n : cap - 1), p);
 }
 
-/* Records the lowest valkey_version and redis_version across nodes, via a
- * blocking INFO server to each, for INFO and HELLO to report. The oldest
- * shard bounds what clients can rely on, e.g. during a rolling upgrade.
- * The previous values are kept if no node answers. */
-static void probe_backend_versions(const ClusterNode *nodes, int count) {
-    static const char cmd[] = "*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n";
+/* Parses the "module:name=<name>,ver=<ver>,..." lines of an INFO modules
+ * section into out. Returns how many were found. */
+static int info_modules(const char *info, BackendModule *out, int cap) {
+    int n = 0;
+    for (const char *p = strstr(info, "\nmodule:name="); p && n < cap; p = strstr(p + 1, "\nmodule:name=")) {
+        p += strlen("\nmodule:name=");
+        size_t len = strcspn(p, ",\r\n");
+        snprintf(out[n].name, sizeof(out[n].name), "%.*s",
+                 (int)(len < sizeof(out[n].name) ? len : sizeof(out[n].name) - 1), p);
+        const char *ver = strstr(p, ",ver=");
+        const char *eol = p + strcspn(p, "\r\n");
+        out[n].ver = ver && ver < eol ? strtoll(ver + 5, NULL, 10) : 0;
+        n++;
+    }
+    return n;
+}
+
+/* 1 if resp holds a whole bulk string. recv_bulk() returns whatever arrived
+ * before SO_RCVTIMEO, and a cut-off INFO would drop modules and fields. */
+static int bulk_complete(const char *resp, size_t len) {
+    if (len == 0 || resp[0] != '$') return 0;
+    const char *eol = memchr(resp, '\n', len);
+    if (!eol) return 0;
+    long bl = strtol(resp + 1, NULL, 10);
+    return bl >= 0 && len >= (size_t)(eol - resp) + 1 + (size_t)bl + 2;
+}
+
+/* Keeps only the modules in mods that are also in other, with the lower
+ * of the two versions. Returns the new count. */
+static int intersect_modules(BackendModule *mods, int n, const BackendModule *other, int nother) {
+    int kept = 0;
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < nother; j++)
+            if (!strcmp(mods[i].name, other[j].name)) {
+                mods[kept] = mods[i];
+                if (other[j].ver < mods[kept].ver) mods[kept].ver = other[j].ver;
+                kept++;
+                break;
+            }
+    return kept;
+}
+
+/* Records the lowest valkey_version and redis_version across nodes, and
+ * the modules loaded on every node, via a blocking INFO server modules to
+ * each, for INFO and HELLO to report. The oldest shard bounds what clients
+ * can rely on, e.g. during a rolling upgrade, and a module only some
+ * shards have would fail for keys on the others. Only nodes that own slots
+ * are asked: a dead master stays in nodes[] until its index is reused, and
+ * each one would cost a connect timeout on the refresh thread. The previous
+ * values are kept if no node answers. */
+static void probe_backend_versions(const ClusterNode *nodes, int count, const int *has_slots) {
+    static const char cmd[] = "*3\r\n$4\r\nINFO\r\n$6\r\nserver\r\n$7\r\nmodules\r\n";
     int ms = g_config.backend_connect_timeout_ms;
     char valkey_version[32] = "", redis_version[32] = "";
+    BackendModule mods[MAX_BACKEND_MODULES], node_mods[MAX_BACKEND_MODULES];
+    int nmods = 0, answered = 0;
     for (int i = 0; i < count; i++) {
+        if (!has_slots[i]) continue;
         int fd = tcp_connect_timeout(nodes[i].ip, nodes[i].port, ms);
         if (fd < 0) continue;
         struct timeval tv = {ms / 1000, (ms % 1000) * 1000};
@@ -83,7 +132,7 @@ static void probe_backend_versions(const ClusterNode *nodes, int count) {
         size_t len;
         char *resp = recv_bulk(fd, &len);
         close(fd);
-        if (len > 0 && resp[0] == '$') {
+        if (bulk_complete(resp, len)) {
             char v[32], r[32];
             info_field(resp, "valkey_version", v, sizeof(v));
             info_field(resp, "redis_version", r, sizeof(r));
@@ -91,10 +140,17 @@ static void probe_backend_versions(const ClusterNode *nodes, int count) {
                 snprintf(valkey_version, sizeof(valkey_version), "%s", v);
             if (r[0] && (!redis_version[0] || version_cmp(r, redis_version) < 0))
                 snprintf(redis_version, sizeof(redis_version), "%s", r);
+            int n = info_modules(resp, node_mods, MAX_BACKEND_MODULES);
+            if (answered++ == 0) {
+                memcpy(mods, node_mods, sizeof(*mods) * (size_t)n);
+                nmods = n;
+            } else {
+                nmods = intersect_modules(mods, nmods, node_mods, n);
+            }
         }
         free(resp);
     }
-    if (valkey_version[0] || redis_version[0]) info_set_backend_versions(valkey_version, redis_version);
+    if (valkey_version[0] || redis_version[0]) info_set_backend_info(valkey_version, redis_version, mods, nmods);
 }
 
 /* Exact match against one comma-separated token in a CLUSTER NODES flags
@@ -292,7 +348,7 @@ void fetch_cluster_nodes(void) {
         printf("  [%d] %s:%d  flags=%-24s %s\n", i, g_nodes[i].ip, g_nodes[i].port, g_nodes[i].flags,
                g_nodes[i].is_master ? "(master)" : "(replica)");
     printf("\n");
-    probe_backend_versions(g_nodes, g_node_count);
+    probe_backend_versions(g_nodes, g_node_count, g_node_has_slots);
 }
 
 /* ── periodic topology refresh ──────────────────────────────────────── */
@@ -492,7 +548,7 @@ static void reconcile_and_publish(ClusterNode *dn, int dcount, int *dslot, const
     wake_all_workers();
 
     printf("[topology] refresh published: %d node(s) (was %d), source=%s:%d\n", count, old_count, src_ip, src_port);
-    probe_backend_versions(nodes, count);
+    probe_backend_versions(nodes, count, has_slots);
 }
 
 static void *topology_refresh_loop(void *arg) {

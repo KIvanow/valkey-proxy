@@ -1,6 +1,16 @@
 #include "proxy.h"
 
 /* ── config parsing ─────────────────────────────────────────────────── */
+/* For the reported_* settings, where a value cut short at a space or at
+ * the field size would silently report something else. */
+static void set_reported(const char *key, const char *line, const char *val, char *dst, size_t cap) {
+    char extra[2];
+    if (sscanf(line, "%*s %*s %1s", extra) == 1)
+        fprintf(stderr, "Warning: %s takes one value without spaces; ignoring everything after \"%s\"\n", key, val);
+    if (strlen(val) >= cap) fprintf(stderr, "Warning: %s is longer than %zu characters; truncating\n", key, cap - 1);
+    snprintf(dst, cap, "%.*s", (int)(cap - 1), val);
+}
+
 void parse_conf(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) {
@@ -69,6 +79,12 @@ void parse_conf(const char *path) {
             g_pool_min[POOL_ACL] = atoi(val);
         else if (!strcmp(key, "max_acl_connection"))
             g_pool_max[POOL_ACL] = atoi(val);
+        else if (!strcmp(key, "reported_version"))
+            set_reported(key, line, val, g_config.reported_version, sizeof(g_config.reported_version));
+        else if (!strcmp(key, "reported_role"))
+            set_reported(key, line, val, g_config.reported_role, sizeof(g_config.reported_role));
+        else if (!strcmp(key, "reported_modules"))
+            set_reported(key, line, val, g_config.reported_modules, sizeof(g_config.reported_modules));
     }
     fclose(f);
 

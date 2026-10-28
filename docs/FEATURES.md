@@ -95,7 +95,11 @@ above. Unknown names are ignored, and a reply with no known section is empty, as
 that only name proxy-answered sections never contact a backend. A RESP3 client gets a verbatim
 string, as from Valkey.
 
-`HELLO` reports `mode` `standalone` and the same version as `INFO`.
+`HELLO` reports `server` `valkey-proxy` and `mode` `standalone`. `version`, `role` and `modules`
+follow the backends: the lowest version across the masters (the same one `INFO server` shows),
+`master`, and the modules loaded on every master. Each one can be overridden in the config with
+`reported_version`, `reported_role` and `reported_modules`. `reported_version` also applies to
+`INFO server`.
 
 `PROXY INFO [section ...] [SHARD <idx>|<ip:port>]` sends `INFO [section ...]` to every master (or
 just the given one) and returns each reply unmerged: an array of label/reply pairs (a map for a

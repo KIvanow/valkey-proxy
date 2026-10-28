@@ -1151,6 +1151,40 @@ void run_general_tests(const char *host, int port, int *pass, int *fail) {
     ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 2, "HELLO", "2") : -1;
     CHECK(ilen > 0 && strstr(info, "$4\r\nmode\r\n$10\r\nstandalone\r\n"), "HELLO: mode is standalone, matching INFO",
           pass, fail);
+    CHECK(ilen > 0 && strstr(info, "$6\r\nserver\r\n$12\r\nvalkey-proxy\r\n"), "HELLO: server is valkey-proxy", pass,
+          fail);
+
+    /* HELLO version is the one INFO server reports. */
+    char hello_ver[64] = "", info_ver[64] = "";
+    const char *hv = ilen > 0 ? strstr(info, "$7\r\nversion\r\n$") : NULL;
+    if (hv) {
+        hv = strchr(hv + 13, '\n');
+        if (hv) sscanf(hv + 1, "%63[^\r]", hello_ver);
+    }
+    ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 2, "INFO", "server") : -1;
+    const char *iv = ilen > 0 ? strstr(info, "\nvalkey_version:") : NULL;
+    if (!iv && ilen > 0) iv = strstr(info, "\nredis_version:");
+    if (iv) sscanf(strchr(iv, ':') + 1, "%63[^\r]", info_ver);
+    CHECK(hello_ver[0] && !strcmp(hello_ver, info_ver), "HELLO: version matches INFO server", pass, fail);
+
+    /* Every module the first shard has loaded shows up in HELLO (the test
+     * cluster's masters all load the same modules). */
+    ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 5, "PROXY", "INFO", "modules", "SHARD", "0") : -1;
+    char shard_mods[2048] = "";
+    if (ilen > 0) snprintf(shard_mods, sizeof(shard_mods), "%s", info);
+    ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 2, "HELLO", "2") : -1;
+    int mods_ok = ilen > 0 && shard_mods[0] != '\0', compared = 0;
+    for (const char *m = strstr(shard_mods, "module:name="); m && mods_ok; m = strstr(m + 1, "module:name=")) {
+        char want[96], name[64];
+        if (sscanf(m + 12, "%63[^,\r]", name) != 1) break;
+        snprintf(want, sizeof(want), "$4\r\nname\r\n$%zu\r\n%s\r\n", strlen(name), name);
+        if (!strstr(info, want)) mods_ok = 0;
+        compared++;
+    }
+    /* A backend without modules (Valkey before 9.0) must give an empty
+     * list, so the check never passes without comparing anything. */
+    if (mods_ok && compared == 0) mods_ok = strstr(info, "$7\r\nmodules\r\n*0\r\n") != NULL;
+    CHECK(mods_ok, "HELLO: modules are the ones the backends have loaded", pass, fail);
     free(pools);
 
     for (int i = 0; i < _ntr; i++) printf("  [%s] %s\n", _tr[i].ok ? "PASS" : "FAIL", _tr[i].label);

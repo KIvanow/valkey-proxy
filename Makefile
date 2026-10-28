@@ -42,7 +42,7 @@ TEST_CFLAGS = -O0 -g -Wall -Wextra -Itest -pthread
 
 TEST_SRCS = test/run-test.c test/acl/test_acl.c test/acl/acl_fixture.c test/bitmap/test_bitmap.c \
             test/blocking/test_blocking.c \
-            test/general/test_general.c test/hash/test_hash.c \
+            test/general/test_general.c test/general/test_reported.c test/hash/test_hash.c \
             test/geospatial/test_geospatial.c \
             test/hyperloglog/test_hyperloglog.c \
             test/list/test_list.c \
