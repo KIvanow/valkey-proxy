@@ -74,7 +74,7 @@ Each section comes from one of three sources:
 
 | Section | Source |
 |---|---|
-| `server` | Proxy. `redis_version`/`valkey_version` are the lowest seen across the shards (probed at startup and after each topology change); `server_mode:standalone`; uptime, `process_id`, `run_id`, `tcp_port`, `executable`, `config_file` and listeners are the proxy's own; adds `proxy_version` |
+| `server` | Proxy. `redis_version`/`valkey_version` are the lowest seen across the shards (probed at startup, after each topology change, and every 60s with periodic refresh on); `server_mode:standalone`; uptime, `process_id`, `run_id`, `tcp_port`, `executable`, `config_file` and listeners are the proxy's own; adds `proxy_version` |
 | `tls` | Proxy. Serial and seconds to expiry of the proxy's server certificate; the client and CA fields stay `none`/`0` |
 | `clients` | Proxy. `connected_clients` across all workers, `maxclients` = `max_connection` |
 | `cluster` | Proxy. Always `cluster_enabled:0` |

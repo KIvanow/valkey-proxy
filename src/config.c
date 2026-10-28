@@ -1,5 +1,7 @@
 #include "proxy.h"
 
+#define DEFAULT_BACKEND_CONNECT_TIMEOUT_MS 1000
+
 /* ── config parsing ─────────────────────────────────────────────────── */
 /* For the reported_* settings, where a value cut short at a space or at
  * the field size would silently report something else. */
@@ -24,7 +26,7 @@ void parse_conf(const char *path) {
     g_config.max_connection = DEFAULT_MAX_CONNECTIONS;
     g_config.cluster_refresh_interval_ms = 0; /* 0 = periodic refresh disabled */
     g_config.cluster_node_fail_grace_ms = 10000;
-    g_config.backend_connect_timeout_ms = 1000;
+    g_config.backend_connect_timeout_ms = DEFAULT_BACKEND_CONNECT_TIMEOUT_MS;
     char line[512], key[64], val[448];
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#' || line[0] == '\n') continue;
@@ -92,6 +94,13 @@ void parse_conf(const char *path) {
         fprintf(stderr, "Warning: max_connection must be positive (got %d); falling back to default %d\n",
                 g_config.max_connection, DEFAULT_MAX_CONNECTIONS);
         g_config.max_connection = DEFAULT_MAX_CONNECTIONS;
+    }
+    /* 0 would make every backend connect time out at once, and as an
+     * SO_RCVTIMEO it means no timeout at all. */
+    if (g_config.backend_connect_timeout_ms <= 0) {
+        fprintf(stderr, "Warning: backend_connect_timeout_ms must be positive (got %d); falling back to default %d\n",
+                g_config.backend_connect_timeout_ms, DEFAULT_BACKEND_CONNECT_TIMEOUT_MS);
+        g_config.backend_connect_timeout_ms = DEFAULT_BACKEND_CONNECT_TIMEOUT_MS;
     }
     /* Clamp here, before any thread starts, so everything that walks
      * g_workers (main(), the refresh thread, PROXY POOLS) agrees on how many

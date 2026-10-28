@@ -61,6 +61,7 @@ typedef enum {
     CS_WAITING_RESP,
     CS_WRITING_RESP,
     CS_BUFFERING_CMD,
+    CS_DISCARDING_CMD, /* skipping the rest of a rejected command */
 } ClientState;
 
 typedef enum {
