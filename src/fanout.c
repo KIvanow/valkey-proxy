@@ -1251,6 +1251,13 @@ void fanout_send_response(Worker *w, ClientConn *client, char *resp, int resp_le
         if (!tmp) {
             free(resp);
             client_send_error(w, client, "out of memory");
+            /* Drop the command, or the next read would parse and run it
+             * again. */
+            client->pbuf_len = 0;
+            client->hbuf_len = 0;
+            client->using_pbuf = 0;
+            client->state = CS_READING_HDR;
+            fd_watch(w, client->fd, EL_READABLE);
             return;
         }
         client->wbuf = tmp;

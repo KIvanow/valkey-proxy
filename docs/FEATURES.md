@@ -74,7 +74,7 @@ Each section comes from one of three sources:
 
 | Section | Source |
 |---|---|
-| `server` | Proxy. `redis_version`/`valkey_version` are the lowest seen across the shards (probed at startup, after each topology change, and every 60s with periodic refresh on); `server_mode:standalone`; uptime, `process_id`, `run_id`, `tcp_port`, `executable`, `config_file` and listeners are the proxy's own; adds `proxy_version` |
+| `server` | Proxy. `redis_version`/`valkey_version` are the lowest seen across the shards (probed at startup, after each topology change, and every 60s with periodic refresh on; with refresh off, only at startup. A master that doesn't answer a probe is left out until the next one); `server_mode:standalone`; uptime, `process_id`, `run_id`, `tcp_port`, `executable`, `config_file` and listeners are the proxy's own; adds `proxy_version` |
 | `tls` | Proxy. Serial and seconds to expiry of the proxy's server certificate; the client and CA fields stay `none`/`0` |
 | `clients` | Proxy. `connected_clients` across all workers, `maxclients` = `max_connection` |
 | `replication` | Proxy. `role` is the one `HELLO` reports, `connected_slaves:0`. The backends' own replication is in `PROXY INFO replication` |
@@ -105,12 +105,14 @@ follow the backends: the lowest version across the masters (the same one `INFO s
 connection.
 
 `HELLO` says `server` `valkey-proxy`, while `INFO server` keeps `server_name:valkey`. Clients and
-tools read `server_name` to tell Valkey from Redis, so it stays as on a direct connection.
+tools read `server_name` to tell Valkey from Redis, so it stays as on a direct connection: present
+for a Valkey backend, left out for a Redis one.
 `proxy_version` in `INFO server` shows that the server is the proxy.
 
 `PROXY INFO [section ...] [SHARD <idx>|<ip:port>]` sends `INFO [section ...]` to every master (or
 just the given one) and returns each reply unmerged: an array of label/reply pairs (a map for a
 RESP3 client), labelled `<idx>:<ip>:<port>`. A shard that can't be reached gets an error entry.
+`SHARD` can come before, between or after the sections.
 
 `PROXY POOLS` returns a bulk string in INFO's `key:value` format: a `# Pools` header, `workers:<n>`,
 then one `pool_db<db>_n<node>_<type>` line per backend node and pool type (`normal`, `blocking`,

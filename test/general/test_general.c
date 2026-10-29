@@ -1102,7 +1102,8 @@ void run_general_tests(const char *host, int port, int *pass, int *fail) {
               strstr(info, "# Proxy\r\n") && !strstr(info, "# Memory\r\n"),
           "INFO: default sections are server, clients, cluster, keyspace and proxy", pass, fail);
     CHECK(ilen > 0 && strstr(info, "server_mode:standalone\r\n") && strstr(info, "redis_version:") &&
-              strstr(info, "proxy_version:"),
+              strstr(info, "proxy_version:") &&
+              (strstr(info, "\nserver_name:valkey\r\n") != NULL) == (strstr(info, "\nvalkey_version:") != NULL),
           "INFO: server section reports a standalone server and versions", pass, fail);
 
     for (int i = 0; i < 12; i++) {
@@ -1149,6 +1150,11 @@ void run_general_tests(const char *host, int port, int *pass, int *fail) {
           "PROXY INFO server SHARD 0: one shard's raw reply", pass, fail);
     proxy_cmd(fd, r, sizeof(r), 5, "PROXY", "INFO", "server", "SHARD", "999");
     CHECK(strstr(r, "unknown shard") != NULL, "PROXY INFO SHARD 999: unknown shard error", pass, fail);
+    ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 5, "PROXY", "INFO", "SHARD", "0", "server") : -1;
+    CHECK(ilen > 0 && !strncmp(info, "*2\r\n", 4) && strstr(info, "_mode:cluster"),
+          "PROXY INFO SHARD 0 server: SHARD may come before the sections", pass, fail);
+    proxy_cmd(fd, r, sizeof(r), 3, "PROXY", "INFO", "SHARD");
+    CHECK(strstr(r, "syntax error") != NULL, "PROXY INFO SHARD: missing shard is a syntax error", pass, fail);
 
     ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 2, "HELLO", "2") : -1;
     CHECK(ilen > 0 && strstr(info, "$4\r\nmode\r\n$10\r\nstandalone\r\n"), "HELLO: mode is standalone, matching INFO",

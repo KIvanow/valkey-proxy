@@ -2,22 +2,27 @@
 #include <time.h>
 #include <sys/time.h>
 
-/* ── recv_bulk (cluster discovery only) ─────────────────────────────── */
+/* ── recv_bulk (cluster discovery and version probe) ────────────────── */
+/* NULL with *out_len 0 on allocation failure: this also runs on the
+ * refresh thread, where one failed allocation shouldn't end the process. */
 static char *recv_bulk(int fd, size_t *out_len) {
     size_t cap = 65536, len = 0;
+    *out_len = 0;
     char *buf = malloc(cap);
     if (!buf) {
         perror("malloc");
-        exit(1);
+        return NULL;
     }
     for (;;) {
         if (len + 1 >= cap) {
             cap *= 2;
-            buf = realloc(buf, cap);
-            if (!buf) {
+            char *tmp = realloc(buf, cap);
+            if (!tmp) {
                 perror("realloc");
-                exit(1);
+                free(buf);
+                return NULL;
             }
+            buf = tmp;
         }
         ssize_t n = read(fd, buf + len, cap - len - 1);
         if (n <= 0) break;
@@ -325,7 +330,7 @@ void fetch_cluster_nodes(void) {
     char *resp = recv_bulk(fd, &len);
     close(fd);
     if (len == 0 || resp[0] == '-') {
-        fprintf(stderr, "CLUSTER NODES failed: %.*s\n", (int)len, resp);
+        fprintf(stderr, "CLUSTER NODES failed: %.*s\n", (int)len, resp ? resp : "");
         free(resp);
         exit(1);
     }

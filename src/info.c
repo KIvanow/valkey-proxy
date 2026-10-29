@@ -208,13 +208,13 @@ static int append_server(GrowBuf *g) {
     int gcc_major = 0, gcc_minor = 0, gcc_patch = 0;
 #endif
 
-    /* valkey_version is left out for a Redis backend, which has none:
-     * clients tell Valkey from Redis by whether the field exists. */
+    /* valkey_version and server_name are left out for a Redis backend,
+     * which has neither: clients tell Valkey from Redis by whether they
+     * exist. */
     if (gb_append_fmt(g,
                       "# Server\r\n"
                       "redis_version:%s\r\n"
-                      "%s%s%s"
-                      "server_name:valkey\r\n"
+                      "%s%s%s%s"
                       "server_mode:standalone\r\n"
                       "os:%s %s %s\r\n"
                       "multiplexing_api:%s\r\n"
@@ -229,10 +229,11 @@ static int append_server(GrowBuf *g) {
                       "config_file:%s\r\n"
                       "listener0:name=%s,bind=%s,port=%d\r\n",
                       redis_version, valkey_version[0] ? "valkey_version:" : "", valkey_version,
-                      valkey_version[0] ? "\r\n" : "", un.sysname, un.release, un.machine, el_backend_name(), gcc_major,
-                      gcc_minor, gcc_patch, (long)getpid(), g_run_id, g_config.proxy_port,
-                      (long long)tv.tv_sec * 1000000LL + tv.tv_usec, uptime, uptime / 86400, g_executable,
-                      g_config_file, g_config.tls_enabled ? "tls" : "tcp", g_config.bind_ip, g_config.proxy_port) < 0)
+                      valkey_version[0] ? "\r\n" : "", valkey_version[0] ? "server_name:valkey\r\n" : "", un.sysname,
+                      un.release, un.machine, el_backend_name(), gcc_major, gcc_minor, gcc_patch, (long)getpid(),
+                      g_run_id, g_config.proxy_port, (long long)tv.tv_sec * 1000000LL + tv.tv_usec, uptime,
+                      uptime / 86400, g_executable, g_config_file, g_config.tls_enabled ? "tls" : "tcp",
+                      g_config.bind_ip, g_config.proxy_port) < 0)
         return -1;
     if (g_config.unix_socket_path[0] &&
         gb_append_fmt(g, "listener1:name=unix,bind=%s\r\n", g_config.unix_socket_path) < 0)
@@ -623,10 +624,18 @@ void handle_proxy_info_cmd(Worker *w, ClientConn *client, int cmdlen) {
     const int *section_lens = lens + 1;
     int nsections = n - 1;
 
+    /* SHARD <idx>|<ip:port> may come anywhere among the sections; take it
+     * out so it isn't sent on as a section name. */
     int targets[MAX_NODES];
-    int ntargets;
-    if (nsections >= 2 && arg_is(sections[nsections - 2], section_lens[nsections - 2], "shard")) {
-        int idx = resolve_shard(w, sections[nsections - 1], section_lens[nsections - 1]);
+    int ntargets = 0;
+    for (int a = 0; a < nsections; a++) {
+        if (!arg_is(sections[a], section_lens[a], "shard")) continue;
+        if (ntargets || a + 1 >= nsections) {
+            client_send_error(w, client, "syntax error");
+            client->hbuf_len = 0;
+            return;
+        }
+        int idx = resolve_shard(w, sections[a + 1], section_lens[a + 1]);
         if (idx < 0) {
             client_send_error(w, client, "unknown shard");
             client->hbuf_len = 0;
@@ -634,10 +643,12 @@ void handle_proxy_info_cmd(Worker *w, ClientConn *client, int cmdlen) {
         }
         targets[0] = idx;
         ntargets = 1;
+        memmove(&args[a + 1], &args[a + 3], sizeof(*args) * (size_t)(nsections - a - 2));
+        memmove(&lens[a + 1], &lens[a + 3], sizeof(*lens) * (size_t)(nsections - a - 2));
         nsections -= 2;
-    } else {
-        ntargets = topo_all_masters(w, targets);
+        a--;
     }
+    if (!ntargets) ntargets = topo_all_masters(w, targets);
 
     int built_len;
     char *built = build_resp_cmd("INFO", 4, sections, section_lens, nsections, &built_len);
