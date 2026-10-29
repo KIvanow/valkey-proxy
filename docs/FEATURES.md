@@ -77,6 +77,7 @@ Each section comes from one of three sources:
 | `server` | Proxy. `redis_version`/`valkey_version` are the lowest seen across the shards (probed at startup, after each topology change, and every 60s with periodic refresh on); `server_mode:standalone`; uptime, `process_id`, `run_id`, `tcp_port`, `executable`, `config_file` and listeners are the proxy's own; adds `proxy_version` |
 | `tls` | Proxy. Serial and seconds to expiry of the proxy's server certificate; the client and CA fields stay `none`/`0` |
 | `clients` | Proxy. `connected_clients` across all workers, `maxclients` = `max_connection` |
+| `replication` | Proxy. `role` is the one `HELLO` reports, `connected_slaves:0`. The backends' own replication is in `PROXY INFO replication` |
 | `cluster` | Proxy. Always `cluster_enabled:0` |
 | `keyspace` | Every master, summed per db (`avg_ttl` weighted by `expires`), so it agrees with `DBSIZE` |
 | `memory` `persistence` `stats` `commandstats` `errorstats` `latencystats` | Every master, listed per shard without merging |
@@ -89,7 +90,7 @@ stays a flat `key:value` list. `<idx>` is the shard's index in the proxy's topol
 `PROXY POOLS` and `PROXY INFO ... SHARD` use.
 
 `INFO` / `INFO default`: server, clients, cluster, keyspace, proxy. `INFO all`: adds tls, memory,
-persistence, stats, commandstats, errorstats, latencystats. `INFO everything`: adds pools. Section
+persistence, stats, replication, commandstats, errorstats, latencystats. `INFO everything`: adds pools. Section
 names are case-insensitive and can be combined (`INFO server keyspace`); output follows the order
 above. Unknown names are ignored, and a reply with no known section is empty, as in Valkey. Requests
 that only name proxy-answered sections never contact a backend. A RESP3 client gets a verbatim
@@ -99,7 +100,13 @@ string, as from Valkey.
 follow the backends: the lowest version across the masters (the same one `INFO server` shows),
 `master`, and the modules loaded on every master. Each one can be overridden in the config with
 `reported_version`, `reported_role` and `reported_modules`. `reported_version` also applies to
-`INFO server`.
+`INFO server`, and `reported_role` to `INFO replication`. On Valkey, `reported_version` changes
+`valkey_version`; `redis_version` stays as the backends report it (7.2.4 on Valkey), as on a direct
+connection.
+
+`HELLO` says `server` `valkey-proxy`, while `INFO server` keeps `server_name:valkey`. Clients and
+tools read `server_name` to tell Valkey from Redis, so it stays as on a direct connection.
+`proxy_version` in `INFO server` shows that the server is the proxy.
 
 `PROXY INFO [section ...] [SHARD <idx>|<ip:port>]` sends `INFO [section ...]` to every master (or
 just the given one) and returns each reply unmerged: an array of label/reply pairs (a map for a

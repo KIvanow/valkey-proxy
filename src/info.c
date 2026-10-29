@@ -10,7 +10,7 @@
  *
  * Each section has one source:
  *   - LOCAL: answered from the proxy's own state, no backend round trip
- *     (server, tls, clients, cluster, proxy, pools).
+ *     (server, tls, clients, replication, cluster, proxy, pools).
  *   - SUM: fanned out to every master and summed (keyspace), so it agrees
  *     with DBSIZE.
  *   - SHARDS: fanned out to every master and listed per shard, unmerged
@@ -39,6 +39,7 @@ enum {
     SEC_MEMORY,
     SEC_PERSISTENCE,
     SEC_STATS,
+    SEC_REPLICATION,
     SEC_COMMANDSTATS,
     SEC_ERRORSTATS,
     SEC_LATENCYSTATS,
@@ -58,13 +59,13 @@ typedef struct {
 
 /* Indexed by SEC_*; that order is also the output order. */
 static const InfoSection SECTIONS[SEC_COUNT] = {
-    {"server", "Server", SRC_LOCAL, LVL_DEFAULT},          {"tls", "TLS", SRC_LOCAL, LVL_ALL},
-    {"clients", "Clients", SRC_LOCAL, LVL_DEFAULT},        {"memory", "Memory", SRC_SHARDS, LVL_ALL},
-    {"persistence", "Persistence", SRC_SHARDS, LVL_ALL},   {"stats", "Stats", SRC_SHARDS, LVL_ALL},
-    {"commandstats", "Commandstats", SRC_SHARDS, LVL_ALL}, {"errorstats", "Errorstats", SRC_SHARDS, LVL_ALL},
-    {"latencystats", "Latencystats", SRC_SHARDS, LVL_ALL}, {"cluster", "Cluster", SRC_LOCAL, LVL_DEFAULT},
-    {"keyspace", "Keyspace", SRC_SUM, LVL_DEFAULT},        {"proxy", "Proxy", SRC_LOCAL, LVL_DEFAULT},
-    {"pools", "Pools", SRC_LOCAL, LVL_EVERYTHING},
+    {"server", "Server", SRC_LOCAL, LVL_DEFAULT},        {"tls", "TLS", SRC_LOCAL, LVL_ALL},
+    {"clients", "Clients", SRC_LOCAL, LVL_DEFAULT},      {"memory", "Memory", SRC_SHARDS, LVL_ALL},
+    {"persistence", "Persistence", SRC_SHARDS, LVL_ALL}, {"stats", "Stats", SRC_SHARDS, LVL_ALL},
+    {"replication", "Replication", SRC_LOCAL, LVL_ALL},  {"commandstats", "Commandstats", SRC_SHARDS, LVL_ALL},
+    {"errorstats", "Errorstats", SRC_SHARDS, LVL_ALL},   {"latencystats", "Latencystats", SRC_SHARDS, LVL_ALL},
+    {"cluster", "Cluster", SRC_LOCAL, LVL_DEFAULT},      {"keyspace", "Keyspace", SRC_SUM, LVL_DEFAULT},
+    {"proxy", "Proxy", SRC_LOCAL, LVL_DEFAULT},          {"pools", "Pools", SRC_LOCAL, LVL_EVERYTHING},
 };
 
 /* ── process identity, set once by info_init() before any worker runs ── */
@@ -510,6 +511,11 @@ static char *build_info(Worker *w, ClientConn *client, uint32_t mask, FanoutCtx 
             case SEC_SERVER: rc = append_server(&g); break;
             case SEC_TLS: rc = append_tls(&g); break;
             case SEC_CLIENTS: rc = append_clients(&g); break;
+            /* The same role HELLO reports. The proxy has no replicas of its
+             * own; the backends' replication is in PROXY INFO replication. */
+            case SEC_REPLICATION:
+                rc = gb_append_fmt(&g, "# Replication\r\nrole:%s\r\nconnected_slaves:0\r\n", info_reported_role());
+                break;
             case SEC_CLUSTER: rc = gb_append_fmt(&g, "# Cluster\r\ncluster_enabled:0\r\n"); break;
             case SEC_KEYSPACE: rc = ctx ? append_keyspace(&g, ctx) : -1; break;
             case SEC_PROXY: rc = append_proxy(w, &g, queried, ok); break;

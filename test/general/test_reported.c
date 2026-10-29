@@ -29,6 +29,10 @@ void run_reported_tests(const char *host, int port, int *pass, int *fail) {
     CHECK(len > 0 && (strstr(buf, "\nvalkey_version:8.0.2\r\n") || strstr(buf, "\nredis_version:8.0.2\r\n")),
           "reported_version: INFO server reports it too", pass, fail);
 
+    len = resp_send_raw_reply(fd, buf, sizeof(buf), 2, "INFO", "replication");
+    CHECK(len > 0 && strstr(buf, "# Replication\r\nrole:replica\r\n"), "reported_role: INFO replication reports it too",
+          pass, fail);
+
     len = resp_send_raw_reply(fd, buf, sizeof(buf), 2, "HELLO", "3");
     CHECK(len > 0 && strstr(buf, "$7\r\nmodules\r\n*2\r\n%4\r\n$4\r\nname\r\n$6\r\nsearch\r\n"),
           "reported_modules: RESP3 HELLO sends each module as a map", pass, fail);

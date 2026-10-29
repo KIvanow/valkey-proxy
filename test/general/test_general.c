@@ -1134,6 +1134,8 @@ void run_general_tests(const char *host, int port, int *pass, int *fail) {
     CHECK(ilen > 0 && strstr(info, "# TLS\r\n") && strstr(info, "# Memory\r\nshard") &&
               strstr(info, "# Commandstats\r\n") && !strstr(info, "# Pools\r\n"),
           "INFO all: adds tls and the per-shard sections, not pools", pass, fail);
+    CHECK(ilen > 0 && strstr(info, "# Replication\r\nrole:master\r\nconnected_slaves:0\r\n"),
+          "INFO all: adds a local replication section with HELLO's role", pass, fail);
     CHECK(ilen > 0 && strstr(info, ",status=ok\r\n") && strstr(info, "_used_memory:"),
           "INFO all: per-shard sections label each shard and prefix its lines", pass, fail);
     ilen = info ? resp_send_raw_reply(fd, info, pools_cap, 2, "INFO", "everything") : -1;
